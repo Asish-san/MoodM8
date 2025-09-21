@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MoodM8 — demo</title>
+  <style>
+    body { font-family: system-ui, Arial; max-width:720px; margin:2rem auto; }
+    #messages { border:1px solid #ddd; padding:1rem; min-height:200px }
+    .msg.user{ text-align:right; color:#111 }
+    .msg.bot{ text-align:left; color:#055 }
+  </style>
+</head>
+<body>
+  <h1>MoodM8 (demo)</h1>
+  <div id="messages"></div>
+  <textarea id="input" rows=3 style="width:100%"></textarea>
+  <div>
+    <label><input type="checkbox" id="saveOpt"> Save this session (encrypted)</label>
+    <input id="pass" placeholder="Encryption passphrase (only you know it)" style="width:40%" />
+  </div>
+  <button id="send">Send</button>
+
+  <script>
+    const API = "<BACKEND_URL>"; // replace with deployed Cloud Run URL or proxy
+    const messagesEl = document.getElementById('messages');
+
+    function append(role, text){
+      const d = document.createElement('div');
+      d.className = 'msg ' + (role==='user'?'user':'bot');
+      d.textContent = (role==='user'?'You: ':'MoodM8: ') + text;
+      messagesEl.appendChild(d);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // AES-GCM encrypt helper (passphrase -> key)
+    async function encryptText(pass, plaintext){
+      const enc = new TextEncoder();
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const baseKey = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
+      const key = await crypto.subtle.deriveKey(
+        {name:'PBKDF2', salt, iterations:100000, hash:'SHA-256'},
+        baseKey,
+        {name:'AES-GCM', length:256},
+        true,
+        ['encrypt']
+      );
+      const cipher = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, enc.encode(plaintext));
+      // return base64 of salt|iv|cipher
+      const blob = new Uint8Array(salt.byteLength + iv.byteLength + cipher.byteLength);
+      blob.set(salt,0); blob.set(iv, salt.byteLength); blob.set(new Uint8Array(cipher), salt.byteLength+iv.byteLength);
+      return btoa(String.fromCharCode(...blob));
+    }
+
+    document.getElementById('send').onclick = async () => {
+      const text = document.getElementById('input').value.trim();
+      if(!text) return;
+      append('user', text);
+      document.getElementById('input').value = '';
+      let payload = { message: text };
+      const saveOpt = document.getElementById('saveOpt').checked;
+      if(saveOpt){
+        const pass = document.getElementById('pass').value;
+        if(!pass){ alert('Enter a passphrase to encrypt saves.'); return; }
+        const ciphertext = await encryptText(pass, text);
+        payload.save_opt_in_ciphertext = ciphertext;
+      }
+      try {
+        const res = await fetch(API + "/chat", {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        append('bot', j.reply || 'No reply');
+      } catch(e){
+        append('bot', 'Error contacting server: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>
